@@ -9,11 +9,23 @@
 #include <WiFiManager.h>
 #include <WiFiClientSecure.h>
 
+// Modbus
+#include <ModbusMaster.h>
+#include "REG_CONFIG.h"
+#include <HardwareSerial.h>
+
+HardwareSerial modbus(2);
+
 #define WIFI_AP ""
 #define WIFI_PASSWORD ""
 
-String TOKEN = "8OWT4qd1gBQAZrXMkCpi";  //9jPma5EpXY0blSVNot3P
+String deviceToken = "8OWT4qd1gBQAZrXMkCpi";  //9jPma5EpXY0blSVNot3P
+//String deviceToken = "tOkvPadbQqLFsmc0sCON";
 char thingsboardServer[] = "mqtt.thingcontrol.io";
+
+String json = "";
+
+ModbusMaster node;
 
 //static const char *fingerprint PROGMEM = "69 E5 FE 17 2A 13 9C 7C 98 94 CA E0 B0 A6 CB 68 66 6C CB 77"; // need to update every 3 months
 unsigned long startMillis;  //some global variables available anywhere in the program
@@ -38,9 +50,28 @@ void configModeCallback (WiFiManager *myWiFiManager) {
   Serial.println(myWiFiManager->getConfigPortalSSID());
 }
 
+// Modbus
+struct Meter
+{
+  String temp;
+  String hum;
+
+};
+
+Meter meter[10] ;
+//signal meta ;
+
 void setup() {
 
   Serial.begin(115200);
+
+  modbus.begin(9600, SERIAL_8N1, 16, 17);
+  Serial.println(F("Starting... SHT20 TEMP/HUM_RS485 Monitor"));
+  // communicate with Modbus slave ID 1 over Serial (port 2)
+  node.begin(ID_Meter, modbus);
+
+  Serial.println();
+  Serial.println(F("***********************************"));
 
   WiFiManager wifiManager;
   //wifiManager.resetSettings();
@@ -49,11 +80,11 @@ void setup() {
   if (!wifiManager.autoConnect("@Thingcontrol_AP")) {
     Serial.println("failed to connect and hit timeout");
     //reset and try again, or maybe put it to deep sleep
-//    ESP.reset();
+    //    ESP.reset();
     delay(1000);
   }
 
-//  wifiClient.setFingerprint(fingerprint);
+  //  wifiClient.setFingerprint(fingerprint);
   client.setServer( thingsboardServer, PORT );
   client.setCallback(callback);
   reconnectMqtt();
@@ -77,7 +108,7 @@ void loop()
 
   currentMillis = millis();  //get the current "time" (actually the number of milliseconds since the program started)
 
-  
+
   //check call back to connect Switch
   if (currentMillis - startMillis >= periodCallBack)  //test whether the period has elapsed
   {
@@ -88,18 +119,17 @@ void loop()
   //send telemetry
   if (currentMillis - starSendTeletMillis >= periodSendTelemetry)  //test whether the period has elapsed
   {
-    char json[] = "{\"tem1\":33,\"tem2\":34,\"tem3\":35,\"hum1\":88,\"lux1\":888,\"pres\":100,\"nh3\":1,\"co2\":300,\"led1\":1}";
-    processTele(json);
-    //
+    readMeter();
+    sendtelemetry();
     starSendTeletMillis = currentMillis;  //IMPORTANT to save the start time of the current LED state.
   }
 }
 
- 
+
 void getMac()
 {
   Serial.println("OK");
-  Serial.print("+TOKEN: ");
+  Serial.print("+deviceToken: ");
   Serial.println(WiFi.macAddress());
 }
 
@@ -133,14 +163,14 @@ void setWiFi()
     Serial.println("failed to connect and hit timeout");
     delay(3000);
     //reset and try again, or maybe put it to deep sleep
-//    ESP.reset();
+    //    ESP.reset();
     delay(5000);
   }
 
   Serial.println("OK");
   Serial.println("+:WiFi Connect");
 
-//  wifiClient.setFingerprint(fingerprint);
+  //  wifiClient.setFingerprint(fingerprint);
   client.setServer( thingsboardServer, PORT );  // secure port over TLS 1.2
   client.setCallback(callback);
   reconnectMqtt();
@@ -169,6 +199,7 @@ void processAtt(char jsonAtt[])
 
 void processTele(char jsonTele[])
 {
+
   char *aString = jsonTele;
   Serial.println("OK");
   Serial.print(F("+:topic v1/devices/me/telemetry , "));
@@ -183,9 +214,9 @@ void processToken()
   //  aString = cmdHdl.readStringArg();
 
   Serial.println("OK");
-  Serial.print("+:TOKEN , ");
+  Serial.print("+:deviceToken , ");
   Serial.println(aString);
-  TOKEN = aString;
+  deviceToken = aString;
 
   reconnectMqtt();
 }
@@ -224,10 +255,72 @@ void callback(char* topic, byte* payload, unsigned int length)
 
 void reconnectMqtt()
 {
-  if ( client.connect("Thingcontrol_AT", TOKEN.c_str(), NULL) )
+  if ( client.connect("Thingcontrol_AT", deviceToken.c_str(), NULL) )
   {
     Serial.println( F("Connect MQTT Success."));
     client.subscribe("v1/devices/me/rpc/request/+");
   }
 
+}
+
+void readMeter() {
+
+
+  read_Modbus(data_) ;
+
+  delay(2000);
+}
+
+void read_Modbus(uint16_t  REG)
+{
+
+  static uint32_t i;
+  uint8_t j, result;
+  uint16_t data[2];
+  uint16_t dat[2];
+  uint32_t value = 0;
+
+
+  // slave: read (6) 16-bit registers starting at register 2 to RX buffer
+  result = node.readInputRegisters(REG, 2);
+
+  // do something with data if read is successful
+  if (result == node.ku8MBSuccess)
+  {
+    for (j = 0; j < 2; j++)
+    {
+      data[j] = node.getResponseBuffer(j);
+    }
+  }
+  for (int a = 0; a < 2; a++)
+  {
+    Serial.print(data[a]);
+    Serial.print("\t");
+  }
+  Serial.println("");
+  meter[0].temp = data[0];
+  meter[0].hum =  data[1];
+  Serial.println("----------------------");
+}
+
+void sendtelemetry()
+{
+  String json = "";
+  json.concat("{\"temp\":");
+  json.concat(meter[0].temp);
+  json.concat(",\"hum\":");
+  json.concat(meter[0].hum);
+  json.concat("}");
+  Serial.println(json);
+
+  // Length (with one extra character for the null terminator)
+  int str_len = json.length() + 1;
+  // Prepare the character array (the buffer)
+  char char_array[str_len];
+  // Copy it over
+  json.toCharArray(char_array, str_len);
+
+
+  processTele(char_array);
+  //}
 }
